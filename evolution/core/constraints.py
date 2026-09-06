@@ -148,7 +148,13 @@ class ConstraintValidator:
             )
 
     def _check_skill_structure(self, text: str) -> ConstraintResult:
-        """Check that a skill file has valid YAML frontmatter and markdown body."""
+        """Check that a skill file has valid YAML frontmatter and markdown body.
+
+        NOTE: the caller must pass the FULL skill file (frontmatter + body).
+        The stock tool passed the body-only text, which can never contain
+        frontmatter — so this check always failed and every evolved skill
+        was wrongly rejected.
+        """
         has_frontmatter = text.strip().startswith("---")
         has_name = "name:" in text[:500] if has_frontmatter else False
         has_description = "description:" in text[:500] if has_frontmatter else False

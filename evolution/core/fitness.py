@@ -104,19 +104,47 @@ class LLMJudge:
         )
 
 
-def skill_fitness_metric(example: dspy.Example, prediction: dspy.Prediction, trace=None) -> float:
+def skill_fitness_metric(example: dspy.Example, prediction: dspy.Prediction, trace=None, force_judge: bool = False) -> float:
     """DSPy-compatible metric function for skill optimization.
 
-    This is what gets passed to dspy.GEPA(metric=...).
+    Hybrid scorer:
+    - Default: fast keyword-overlap heuristic (cheap during optimization).
+    - Every `metric_judge_every`-th call (configured via configure_metric):
+      LLM-as-judge with the full rubric (correctness, procedure following,
+      conciseness + feedback), so the optimizer receives real quality signal.
+    - force_judge=True: always use LLM-as-judge (final holdout evaluation).
+
     Returns a float 0-1 score.
     """
     # The prediction should have an 'output' field with the agent's response
     agent_output = getattr(prediction, "output", "") or ""
     expected = getattr(example, "expected_behavior", "") or ""
-    task = getattr(example, "task_input", "") or ""
 
     if not agent_output.strip():
         return 0.0
+
+    config, judge_every = _METRIC_CONFIG or (None, 0)
+
+    use_judge = force_judge
+    if not use_judge and judge_every and judge_every > 0:
+        _judge_counter[0] += 1
+        use_judge = (_judge_counter[0] % judge_every) == 0
+
+    if use_judge and config is not None:
+        try:
+            task = getattr(example, "task_input", "") or ""
+            skill_text = getattr(example, "skill_text", "") or ""
+            fs = LLMJudge(config).score(
+                task_input=task,
+                expected_behavior=expected,
+                agent_output=agent_output,
+                skill_text=skill_text,
+            )
+            return round(fs.composite, 4)
+        except Exception:
+            # Judge failure must never kill an optimization run —
+            # fall back to the heuristic for this call.
+            pass
 
     # Quick heuristic scoring (for speed during optimization)
     # Full LLM-as-judge scoring is expensive — use it selectively
@@ -134,6 +162,22 @@ def skill_fitness_metric(example: dspy.Example, prediction: dspy.Prediction, tra
         score = 0.3 + (0.7 * overlap)
 
     return min(1.0, max(0.0, score))
+
+
+# Module-level metric configuration (set once at evolve start).
+_METRIC_CONFIG = None  # (EvolutionConfig, judge_every)
+_judge_counter = [0]
+
+
+def configure_metric(config: EvolutionConfig, judge_every: int = 4) -> None:
+    """Route every `judge_every`-th metric call through the LLM judge."""
+    global _METRIC_CONFIG
+    _METRIC_CONFIG = (config, max(0, judge_every))
+
+
+def reset_metric_counter() -> None:
+    """Reset the judge call counter (per optimization run)."""
+    _judge_counter[0] = 0
 
 
 def _parse_score(value) -> float:

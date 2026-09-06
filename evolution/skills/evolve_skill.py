@@ -21,7 +21,7 @@ from rich.table import Table
 from evolution.core.config import EvolutionConfig, resolve_hermes_agent_path
 from evolution.core.dataset_builder import SyntheticDatasetBuilder, EvalDataset, GoldenDatasetLoader
 from evolution.core.external_importers import build_dataset_from_external
-from evolution.core.fitness import skill_fitness_metric, LLMJudge, FitnessScore
+from evolution.core.fitness import skill_fitness_metric, LLMJudge, FitnessScore, configure_metric, reset_metric_counter
 from evolution.core.constraints import ConstraintValidator
 from evolution.skills.skill_module import (
     SkillModule,
@@ -118,7 +118,8 @@ def evolve(
     # ── 3. Validate constraints on baseline ─────────────────────────────
     console.print(f"\n[bold]Validating baseline constraints[/bold]")
     validator = ConstraintValidator(config)
-    baseline_constraints = validator.validate_all(skill["body"], "skill")
+    baseline_full = reassemble_skill(skill["frontmatter"], skill["body"])
+    baseline_constraints = validator.validate_all(baseline_full, "skill")
     all_pass = True
     for c in baseline_constraints:
         icon = "✓" if c.passed else "✗"
@@ -146,16 +147,34 @@ def evolve(
     # Prepare DSPy examples
     trainset = dataset.to_dspy_examples("train")
     valset = dataset.to_dspy_examples("val")
+    # Attach the skill body to every example so the LLM judge (which scores
+    # "did the response follow THIS skill") has the actual instructions.
+    for ex in trainset:
+        ex.skill_text = skill["raw"]
+    for ex in valset:
+        ex.skill_text = skill["raw"]
 
     # ── 5. Run GEPA optimization ────────────────────────────────────────
     console.print(f"\n[bold cyan]Running GEPA optimization ({iterations} iterations)...[/bold cyan]\n")
 
     start_time = time.time()
 
+    def _gepa_metric(gold, pred, trace=None, pred_name=None, pred_trace=None,
+                    program_trace=None) -> float:
+        # GEPA's metric protocol passes pred_name/pred_trace; the shipped
+        # metric only accepts (example, prediction, trace). Adapt it.
+        return skill_fitness_metric(gold, pred, trace)
+
+    # Hybrid metric: cheap keyword overlap for most rollouts, LLM-as-judge
+    # every 4th call so the optimizer receives real rubric feedback.
+    configure_metric(config, judge_every=4)
+    reset_metric_counter()
+
     try:
         optimizer = dspy.GEPA(
-            metric=skill_fitness_metric,
-            max_steps=iterations,
+            metric=_gepa_metric,
+            max_full_evals=iterations,
+            reflection_lm=dspy.LM(eval_model),
         )
 
         optimized_module = optimizer.compile(
@@ -181,11 +200,16 @@ def evolve(
     # ── 6. Extract evolved skill text ───────────────────────────────────
     # The optimized module's instructions contain the evolved skill text
     evolved_body = optimized_module.skill_text
+    # GEPA mutates the predictor's instructions; reflect that into the
+    # module attribute we extract (skill_text is not auto-synced).
+    _pred_instr = getattr(getattr(optimized_module, "predictor", None), "instructions", None)
+    if isinstance(_pred_instr, str) and _pred_instr.strip():
+        evolved_body = _pred_instr.strip()
     evolved_full = reassemble_skill(skill["frontmatter"], evolved_body)
 
     # ── 7. Validate evolved skill ───────────────────────────────────────
     console.print(f"\n[bold]Validating evolved skill[/bold]")
-    evolved_constraints = validator.validate_all(evolved_body, "skill", baseline_text=skill["body"])
+    evolved_constraints = validator.validate_all(evolved_full, "skill", baseline_text=baseline_full)
     all_pass = True
     for c in evolved_constraints:
         icon = "✓" if c.passed else "✗"
@@ -213,12 +237,14 @@ def evolve(
     for ex in holdout_examples:
         # Score baseline
         with dspy.context(lm=lm):
+            ex.skill_text = skill["raw"]  # the instructions the baseline followed
             baseline_pred = baseline_module(task_input=ex.task_input)
-            baseline_score = skill_fitness_metric(ex, baseline_pred)
+            baseline_score = skill_fitness_metric(ex, baseline_pred, force_judge=True)
             baseline_scores.append(baseline_score)
 
+            ex.skill_text = evolved_full  # the instructions the evolved agent followed
             evolved_pred = optimized_module(task_input=ex.task_input)
-            evolved_score = skill_fitness_metric(ex, evolved_pred)
+            evolved_score = skill_fitness_metric(ex, evolved_pred, force_judge=True)
             evolved_scores.append(evolved_score)
 
     avg_baseline = sum(baseline_scores) / max(1, len(baseline_scores))

@@ -105,6 +105,11 @@ class SkillModule(dspy.Module):
         super().__init__()
         self.skill_text = skill_text
         self.predictor = dspy.ChainOfThought(self.TaskWithSkill)
+        # ToolRush-lab fix: make the skill body the predictor INSTRUCTION so
+        # GEPA/MIPROv2 actually mutate the skill text during optimization.
+        # (Stock tool passes it as an input field — prompt content never
+        # changes, so optimization was a no-op.)
+        self.predictor.instructions = skill_text
 
     def forward(self, task_input: str) -> dspy.Prediction:
         result = self.predictor(
