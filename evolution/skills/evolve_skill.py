@@ -43,6 +43,7 @@ def evolve(
     hermes_repo: Optional[str] = None,
     run_tests: bool = False,
     metric_judge_every: int = 1,
+    max_growth: float = 0.2,
     dry_run: bool = False,
 ):
     """Main evolution function — orchestrates the full optimization loop."""
@@ -55,6 +56,7 @@ def evolve(
         judge_model=eval_model,  # Use same model for dataset generation
         run_pytest=run_tests,
     )
+    config.max_prompt_growth = max_growth
 
     # ── 1. Find and load the skill ──────────────────────────────────────
     console.print(f"\n[bold cyan]🧬 Hermes Agent Self-Evolution[/bold cyan] — Evolving skill: [bold]{skill_name}[/bold]\n")
@@ -342,10 +344,15 @@ def evolve(
                    "1 = always judge (quality-based selection — required for skill-text evolution; "
                    "the heuristic biases selection toward the rubric-generated baseline and GEPA "
                    "never adopts instruction mutations). 4+ = cheaper but heuristic-dominated.")
+@click.option("--max-growth", default=0.2, type=float,
+              help="Maximum allowed growth of the evolved artifact vs baseline, as a ratio "
+                   "(0.2 = +20%%). Raise this (e.g. 20.0) when evolving a deliberately degraded "
+                   "or skeleton baseline, where substantive growth is the goal — the default "
+                   "cap exists to prevent bloat on already-complete skills.")
 @click.option("--hermes-repo", default=None, help="Path to hermes-agent repo")
 @click.option("--run-tests", is_flag=True, help="Run full pytest suite as constraint gate")
 @click.option("--dry-run", is_flag=True, help="Validate setup without running optimization")
-def main(skill, iterations, eval_source, dataset_path, optimizer_model, eval_model, metric_judge_every, hermes_repo, run_tests, dry_run):
+def main(skill, iterations, eval_source, dataset_path, optimizer_model, eval_model, metric_judge_every, max_growth, hermes_repo, run_tests, dry_run):
     """Evolve a Hermes Agent skill using DSPy + GEPA optimization."""
     evolve(
         skill_name=skill,
@@ -357,6 +364,7 @@ def main(skill, iterations, eval_source, dataset_path, optimizer_model, eval_mod
         hermes_repo=hermes_repo,
         run_tests=run_tests,
         metric_judge_every=metric_judge_every,
+        max_growth=max_growth,
         dry_run=dry_run,
     )
 
