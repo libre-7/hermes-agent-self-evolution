@@ -42,6 +42,7 @@ def evolve(
     eval_model: str = "openai/gpt-4.1-mini",
     hermes_repo: Optional[str] = None,
     run_tests: bool = False,
+    metric_judge_every: int = 1,
     dry_run: bool = False,
 ):
     """Main evolution function — orchestrates the full optimization loop."""
@@ -165,9 +166,12 @@ def evolve(
         # metric only accepts (example, prediction, trace). Adapt it.
         return skill_fitness_metric(gold, pred, trace)
 
-    # Hybrid metric: cheap keyword overlap for most rollouts, LLM-as-judge
-    # every 4th call so the optimizer receives real rubric feedback.
-    configure_metric(config, judge_every=4)
+    # Hybrid metric: LLM-as-judge when enabled via --metric-judge-every
+    # (default 1 = ALWAYS judge, so GEPA selects on rubric quality, not
+    # keyword overlap with the baseline-generated rubric — the overlap
+    # heuristic biased selection toward the original text and GEPA never
+    # adopted instruction mutations).
+    configure_metric(config, judge_every=metric_judge_every)
     reset_metric_counter()
 
     try:
@@ -333,10 +337,15 @@ def evolve(
 @click.option("--dataset-path", default=None, help="Path to existing eval dataset (JSONL)")
 @click.option("--optimizer-model", default="openai/gpt-4.1", help="Model for GEPA reflections")
 @click.option("--eval-model", default="openai/gpt-4.1-mini", help="Model for evaluations")
+@click.option("--metric-judge-every", default=1, type=int,
+              help="Every Nth fitness call uses LLM-as-judge instead of the keyword heuristic. "
+                   "1 = always judge (quality-based selection — required for skill-text evolution; "
+                   "the heuristic biases selection toward the rubric-generated baseline and GEPA "
+                   "never adopts instruction mutations). 4+ = cheaper but heuristic-dominated.")
 @click.option("--hermes-repo", default=None, help="Path to hermes-agent repo")
 @click.option("--run-tests", is_flag=True, help="Run full pytest suite as constraint gate")
 @click.option("--dry-run", is_flag=True, help="Validate setup without running optimization")
-def main(skill, iterations, eval_source, dataset_path, optimizer_model, eval_model, hermes_repo, run_tests, dry_run):
+def main(skill, iterations, eval_source, dataset_path, optimizer_model, eval_model, metric_judge_every, hermes_repo, run_tests, dry_run):
     """Evolve a Hermes Agent skill using DSPy + GEPA optimization."""
     evolve(
         skill_name=skill,
@@ -347,6 +356,7 @@ def main(skill, iterations, eval_source, dataset_path, optimizer_model, eval_mod
         eval_model=eval_model,
         hermes_repo=hermes_repo,
         run_tests=run_tests,
+        metric_judge_every=metric_judge_every,
         dry_run=dry_run,
     )
 
