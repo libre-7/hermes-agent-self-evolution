@@ -97,25 +97,26 @@ class SkillModule(dspy.Module):
         You are an AI agent following specific skill instructions to complete a task.
         Read the skill instructions carefully and follow the procedure described.
         """
-        skill_instructions: str = dspy.InputField(desc="The skill instructions to follow")
         task_input: str = dspy.InputField(desc="The task to complete")
         output: str = dspy.OutputField(desc="Your response following the skill instructions")
 
     def __init__(self, skill_text: str):
         super().__init__()
         self.skill_text = skill_text
-        self.predictor = dspy.ChainOfThought(self.TaskWithSkill)
-        # ToolRush-lab fix: make the skill body the predictor INSTRUCTION so
-        # GEPA/MIPROv2 actually mutate the skill text during optimization.
-        # (Stock tool passes it as an input field — prompt content never
-        # changes, so optimization was a no-op.)
-        self.predictor.instructions = skill_text
+        # ToolRush-lab fix (round 3, correct API): the skill body becomes the
+        # Signature's INSTRUCTIONS via with_instructions() — which writes the
+        # text into the signature __doc__ that dspy's adapters and GEPA read.
+        # (Rounds 1-2 set `predictor.instructions` as an instance attribute;
+        # dspy 3.3 has NO such property on Predict — the chat adapter and GEPA
+        # both read `signature.instructions`, so the mutation never reached
+        # the model. Verified empirically: GEPA-mutated clones produced
+        # byte-identical outputs. GEPA applies candidates via
+        # pred.signature = pred.signature.with_instructions(candidate).)
+        sig = self.TaskWithSkill.with_instructions(skill_text)
+        self.predictor = dspy.ChainOfThought(sig)
 
     def forward(self, task_input: str) -> dspy.Prediction:
-        result = self.predictor(
-            skill_instructions=self.skill_text,
-            task_input=task_input,
-        )
+        result = self.predictor(task_input=task_input)
         return dspy.Prediction(output=result.output)
 
 

@@ -198,13 +198,20 @@ def evolve(
     console.print(f"\n  Optimization completed in {elapsed:.1f}s")
 
     # ── 6. Extract evolved skill text ───────────────────────────────────
-    # The optimized module's instructions contain the evolved skill text
+    # The optimized module's instructions contain the evolved skill text.
+    # The skill body lives in the predictor's SIGNATURE instructions
+    # (ChainOfThought -> .predict -> .signature). GEPA applies candidates via
+    # pred.signature = pred.signature.with_instructions(candidate), so read
+    # the evolved text from there — .skill_text is a plain attr that GEPA
+    # does NOT sync, so reading it silently returns the ORIGINAL skill.
     evolved_body = optimized_module.skill_text
-    # GEPA mutates the predictor's instructions; reflect that into the
-    # module attribute we extract (skill_text is not auto-synced).
-    _pred_instr = getattr(getattr(optimized_module, "predictor", None), "instructions", None)
-    if isinstance(_pred_instr, str) and _pred_instr.strip():
-        evolved_body = _pred_instr.strip()
+    _pred = getattr(optimized_module, "predictor", None)
+    _inner = getattr(_pred, "predict", None) or _pred  # ChainOfThought wraps Predict
+    _sig = getattr(_inner, "signature", None)
+    if _sig is not None:
+        _instr = getattr(_sig, "instructions", None)
+        if isinstance(_instr, str) and _instr.strip():
+            evolved_body = _instr.strip()
     evolved_full = reassemble_skill(skill["frontmatter"], evolved_body)
 
     # ── 7. Validate evolved skill ───────────────────────────────────────
