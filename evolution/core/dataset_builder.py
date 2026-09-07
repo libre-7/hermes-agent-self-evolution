@@ -43,6 +43,10 @@ class EvalExample:
 @dataclass
 class EvalDataset:
     """Train/val/holdout split of evaluation examples."""
+
+    # Split RNG seed for golden datasets (change to deliberately re-split).
+    _SORT_SEED: int = 0
+
     train: list[EvalExample] = field(default_factory=list)
     val: list[EvalExample] = field(default_factory=list)
     holdout: list[EvalExample] = field(default_factory=list)
@@ -189,7 +193,13 @@ class GoldenDatasetLoader:
                 if line.strip():
                     examples.append(EvalExample.from_dict(json.loads(line)))
 
-        random.shuffle(examples)
+        # STABLE SPLITS (ToolRush-lab fix): seed the shuffle so every run
+        # sees the SAME train/val/holdout split. The stock code used the
+        # global RNG (no seed), so every run measured a DIFFERENT holdout —
+        # baseline scores swung 0.37-0.42 across runs and no cross-run
+        # comparison was valid. Use --seed to change the split deliberately.
+        rng = random.Random(getattr(EvalDataset, "_SORT_SEED", 0))
+        rng.shuffle(examples)
         n = len(examples)
         n_train = max(1, int(n * 0.5))
         n_val = max(1, int(n * 0.25))

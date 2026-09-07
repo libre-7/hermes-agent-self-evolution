@@ -50,6 +50,14 @@ class ConstraintValidator:
         if artifact_type == "skill":
             results.append(self._check_skill_structure(artifact_text))
 
+        # 5. Anti-overfit: evolved skills must not embed eval-dataset markup
+        # (ToolRush-lab fix — Gen1 GEPA adopted a candidate that embedded
+        # literal `task_input:`/`expected_behavior:` dataset examples into
+        # the skill text: it aced the val-set by memorization and then
+        # failed the unseen holdout 0.42 -> 0.32).
+        if artifact_type == "skill":
+            results.append(self._check_no_dataset_memorization(artifact_text))
+
         return results
 
     def run_test_suite(self, hermes_repo: Path) -> ConstraintResult:
@@ -146,6 +154,28 @@ class ConstraintValidator:
                 constraint_name="non_empty",
                 message="Artifact is empty",
             )
+
+    def _check_no_dataset_memorization(self, text: str) -> ConstraintResult:
+        """Reject evolved skills that embed eval-dataset markup in the body.
+
+        Dataset examples use YAML field markers (`task_input:`, 
+        `expected_behavior:`) that a real SKILL.md should never contain —
+        their presence means the optimizer memorized eval examples rather
+        than learning transferable guidance.
+        """
+        markers = ["task_input:", "expected_behavior:", '"source": "golden"', '"category":']
+        found = [m for m in markers if m in text]
+        if not found:
+            return ConstraintResult(
+                passed=True,
+                constraint_name="no_dataset_memorization",
+                message="No eval-dataset markup embedded in skill text",
+            )
+        return ConstraintResult(
+            passed=False,
+            constraint_name="no_dataset_memorization",
+            message=f"Evolved skill embeds dataset markup: {', '.join(found)} — refusing memorized candidate",
+        )
 
     def _check_skill_structure(self, text: str) -> ConstraintResult:
         """Check that a skill file has valid YAML frontmatter and markdown body.
